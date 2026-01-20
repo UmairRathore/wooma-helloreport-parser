@@ -1,0 +1,14 @@
+{
+  "name": "wooma/helloreport-parser",
+  "type": "project",
+  "require": {
+    "php": "^8.2",
+    "smalot/pdfparser": "^2.9",
+    "ramsey/uuid": "^4.7"
+  },
+  "autoload": {
+    "psr-4": {
+      "WoomaHelloReport\\": "src/"
+    }
+  }
+}
