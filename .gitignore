@@ -5,3 +5,4 @@ samples
 vendor
 composer.lock
 out.json
+expectedResult

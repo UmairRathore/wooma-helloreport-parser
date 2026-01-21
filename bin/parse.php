@@ -481,9 +481,7 @@ final class HelloReportParser
         ]];
     }
 
-    /**
-     * @return array<int, array{name:?string, location:?string, note:?string, tested:?string}>
-     */
+
     /**
      * @return array<int, array{name:?string, location:?string, note:?string, tested:?string}>
      */
@@ -496,9 +494,7 @@ final class HelloReportParser
             '/Key\s+type\s+Location\s+of\s+the\s+detector/i'
         );
 
-        if ($block === null) {
-            return [];
-        }
+        if ($block === null) return [];
 
         $lines = array_values(array_filter(
             array_map('trim', explode("\n", $block)),
@@ -506,61 +502,58 @@ final class HelloReportParser
         ));
 
         $detectors = [];
-        $inGeneralSection = false;
-        $generalComments = null;
+        $currentType = null;
 
         foreach ($lines as $line) {
-            // Skip table header
-            if (stripos($line, 'Key type') !== false) continue;
 
-            // Stop row parsing when general section starts
+            // Stop at general section
             if (stripos($line, 'General detector details') !== false) {
-                $inGeneralSection = true;
-                continue;
+                break;
             }
 
-            // Footer noise
+            // Skip headers
+            if (stripos($line, 'Key type') !== false) continue;
+
+            // Skip footer noise
             if (preg_match('~page\s+\d+\s+of\s+\d+~i', $line)) continue;
 
             /**
-             * ROW FORMAT (THIS IS THE IMPORTANT PART):
+             * FULL ROW
              * Smoke alarm Second floor landing Yes
              * Co detector Dining Room Yes
              */
-            if (!$inGeneralSection && preg_match(
-                    '~^(Co detector|Smoke alarm)\s+(.+?)\s+(Yes|No)$~i',
-                    $line,
-                    $m
-                )) {
+            if (preg_match(
+                '~^(Co detector|Smoke alarm)\s+(.+?)\s+(Yes|No)$~i',
+                $line,
+                $m
+            )) {
+                $currentType = $m[1];
+
                 $detectors[] = [
-                    'name'     => $m[1],
+                    'name'     => $currentType,
                     'location' => $m[2],
                     'note'     => null,
-                    'tested'   => strtoupper($m[3]),
+                        'tested'   => strtoupper($m[3]),
                 ];
                 continue;
             }
 
             /**
-             * GENERAL COMMENTS SECTION
+             * CONTINUATION ROW
+             * Top floor bedroom Yes
+             * Living room Yes
              */
-            if ($inGeneralSection) {
-                if (preg_match('~^(Yes|No)$~i', $line)) {
-                    // ignore tested flag here (already captured above)
-                    continue;
-                }
-
-                // accumulate comments (may span multiple lines)
-                $generalComments = $generalComments
-                    ? $generalComments . ' ' . $line
-                    : $line;
-            }
-        }
-
-        // Attach general comments to all detectors if present
-        if ($generalComments) {
-            foreach ($detectors as &$d) {
-                $d['note'] = trim($generalComments);
+            if ($currentType && preg_match(
+                    '~^(.+?)\s+(Yes|No)$~i',
+                    $line,
+                    $m
+                )) {
+                $detectors[] = [
+                    'name'     => $currentType,
+                    'location' => $m[1],
+                    'note'     => null,
+                    'tested'   => strtoupper($m[2]),
+                ];
             }
         }
 
@@ -864,6 +857,7 @@ final class WoomaMapper
             'name' => $d['name'] ?? null,
             'location' => $d['location'] ?? null,
             'note' => $d['note'] ?? null,
+            'tested'    => $d['tested'] ?? null,
         ], $detectors);
     }
 
