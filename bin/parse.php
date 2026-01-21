@@ -416,29 +416,36 @@ final class HelloReportParser
     private function sliceBetweenBest(string $text, string $start, string $end, ?string $mustContainRegex = null): ?string
     {
         $offset = 0;
-        $best = null;
 
-        while (true) {
-            $s = stripos($text, $start, $offset);
-            if ($s === false) break;
-
+        while (($s = stripos($text, $start, $offset)) !== false) {
             $e = stripos($text, $end, $s + strlen($start));
-            if ($e === false) break;
+            if ($e === false) {
+                $offset = $s + strlen($start);
+                continue;
+            }
 
-            $candidate = trim(substr($text, $s + strlen($start), $e - ($s + strlen($start))));
-            if ($candidate !== '') {
-                if ($mustContainRegex === null || preg_match($mustContainRegex, $candidate)) {
-                    return $candidate;
-                }
-                // keep first non-empty as fallback
-                if ($best === null) $best = $candidate;
+            $candidate = trim(substr(
+                $text,
+                $s + strlen($start),
+                $e - ($s + strlen($start))
+            ));
+
+            if ($candidate === '') {
+                $offset = $s + strlen($start);
+                continue;
+            }
+
+            if ($mustContainRegex === null || preg_match($mustContainRegex, $candidate)) {
+                return $candidate;
             }
 
             $offset = $s + strlen($start);
         }
 
-        return $best;
+        return null;
     }
+
+
     /**
      * Keys section in many HelloReport PDFs is often sparse in text and photo-driven.
      * We do NOT infer. We only return what we can explicitly read.
@@ -447,47 +454,117 @@ final class HelloReportParser
      */
     private function parseKeys(string $text): array
     {
-        $block = $this->sliceBetween($text, "Keys", "Detectors");
+        $block = $this->sliceBetweenBest(
+            $text,
+            'Keys',
+            'Detectors',
+            '/General key/i'
+        );
         if ($block === null) return [];
 
-        // Attempt to parse simple "General key details / comments" if present.
-        // Often blank -> return [] deterministically.
-        $details = $this->matchOne($block, '~General key details\s*\n\s*([^\n]+)~');
-        $comments = $this->matchOne($block, '~General key comments\s*\n\s*([^\n]+)~');
+        $lines = array_values(array_filter(
+            array_map('trim', explode("\n", $block))
+        ));
 
-        if ($details === null && $comments === null) return [];
+        // remove header line(s)
+        $lines = array_values(array_filter($lines, fn ($l) =>
+            stripos($l, 'General key') === false
+        ));
+
+        if (count($lines) === 0) return [];
 
         return [[
-            'name' => $details,
-            'description' => $details,
-            'note' => $comments,
-            'no_of_keys' => null,
+            'name'        => 'Property Keys',
+            'description' => null,
+            'note'        => implode(' ', $lines),
+            'no_of_keys'  => null,
         ]];
     }
 
     /**
      * @return array<int, array{name:?string, location:?string, note:?string, tested:?string}>
      */
+    /**
+     * @return array<int, array{name:?string, location:?string, note:?string, tested:?string}>
+     */
     private function parseDetectors(string $text): array
     {
-        $block = $this->sliceBetween($text, "Detectors", "External Areas");
-        if ($block === null) return [];
+        $block = $this->sliceBetweenBest(
+            $text,
+            'Detectors',
+            'External Areas',
+            '/Key\s+type\s+Location\s+of\s+the\s+detector/i'
+        );
 
-        // Example:
-        // "General detector details Tested? General detector comments"
-        // "Yes"
-        // "Battery requires replacement on first floor detector"
-        $tested = $this->matchOne($block, '~Tested\?\s*\n\s*(Yes|No)~i');
-        $comments = $this->matchOne($block, '~General detector comments\s*\n\s*([^\n]+(?:\n[^\n]+)*)~');
+        if ($block === null) {
+            return [];
+        }
 
-        if ($tested === null && $comments === null) return [];
+        $lines = array_values(array_filter(
+            array_map('trim', explode("\n", $block)),
+            fn ($l) => $l !== ''
+        ));
 
-        return [[
-            'name' => 'Detector',       // HelloReport often doesn’t list explicit detector name; keep generic.
-            'location' => null,
-            'note' => $comments ? trim($comments) : null,
-            'tested' => $tested ? strtoupper($tested) : null,
-        ]];
+        $detectors = [];
+        $inGeneralSection = false;
+        $generalComments = null;
+
+        foreach ($lines as $line) {
+            // Skip table header
+            if (stripos($line, 'Key type') !== false) continue;
+
+            // Stop row parsing when general section starts
+            if (stripos($line, 'General detector details') !== false) {
+                $inGeneralSection = true;
+                continue;
+            }
+
+            // Footer noise
+            if (preg_match('~page\s+\d+\s+of\s+\d+~i', $line)) continue;
+
+            /**
+             * ROW FORMAT (THIS IS THE IMPORTANT PART):
+             * Smoke alarm Second floor landing Yes
+             * Co detector Dining Room Yes
+             */
+            if (!$inGeneralSection && preg_match(
+                    '~^(Co detector|Smoke alarm)\s+(.+?)\s+(Yes|No)$~i',
+                    $line,
+                    $m
+                )) {
+                $detectors[] = [
+                    'name'     => $m[1],
+                    'location' => $m[2],
+                    'note'     => null,
+                    'tested'   => strtoupper($m[3]),
+                ];
+                continue;
+            }
+
+            /**
+             * GENERAL COMMENTS SECTION
+             */
+            if ($inGeneralSection) {
+                if (preg_match('~^(Yes|No)$~i', $line)) {
+                    // ignore tested flag here (already captured above)
+                    continue;
+                }
+
+                // accumulate comments (may span multiple lines)
+                $generalComments = $generalComments
+                    ? $generalComments . ' ' . $line
+                    : $line;
+            }
+        }
+
+        // Attach general comments to all detectors if present
+        if ($generalComments) {
+            foreach ($detectors as &$d) {
+                $d['note'] = trim($generalComments);
+            }
+        }
+
+        return $detectors;
     }
 
     /**
